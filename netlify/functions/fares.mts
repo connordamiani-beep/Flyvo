@@ -85,7 +85,7 @@ function pickBest(tickets: any[], nights: number, tolerance: number, preferClose
 
 function shortlist(tickets: any[], nights: number) {
   const best = pickBest(tickets, nights, 2, false);
-  if (best.size < 5) {
+  if (best.size < 20) {
     for (const [dest, t] of pickBest(tickets, nights, 5, true)) if (!best.has(dest)) best.set(dest, t);
   }
   return best;
