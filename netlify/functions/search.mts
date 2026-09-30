@@ -5,9 +5,33 @@
 const MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
 
 const ORIGINS: Record<string, string> = {
-  london: "LON", manchester: "MAN", birmingham: "BHX", edinburgh: "EDI", glasgow: "GLA",
-  bristol: "BRS", liverpool: "LPL", newcastle: "NCL", leeds: "LBA", belfast: "BFS", cardiff: "CWL",
+  london: "LON", heathrow: "LHR", gatwick: "LGW", stansted: "STN", luton: "LTN", "london city": "LCY",
+  manchester: "MAN", birmingham: "BHX", edinburgh: "EDI", glasgow: "GLA", bristol: "BRS", liverpool: "LPL",
+  newcastle: "NCL", leeds: "LBA", "leeds bradford": "LBA", belfast: "BFS", cardiff: "CWL",
+  "east midlands": "EMA", nottingham: "EMA", derby: "EMA", sheffield: "DSA", doncaster: "DSA",
+  southampton: "SOU", aberdeen: "ABZ", exeter: "EXT", norwich: "NWI", bournemouth: "BOH",
+  inverness: "INV", newquay: "NQY", dublin: "DUB", cork: "ORK",
 };
+
+// Used to pick the nearest UK departure city from the visitor's location
+const UK_HUBS: Array<[string, number, number]> = [
+  ["LON", 51.51, -0.13], ["MAN", 53.48, -2.24], ["BHX", 52.48, -1.9], ["EDI", 55.95, -3.19],
+  ["GLA", 55.86, -4.25], ["BRS", 51.45, -2.59], ["LPL", 53.41, -2.98], ["NCL", 54.98, -1.62],
+  ["LBA", 53.8, -1.55], ["BFS", 54.6, -5.93], ["CWL", 51.48, -3.18], ["EMA", 52.95, -1.15],
+  ["DSA", 53.38, -1.47], ["SOU", 50.9, -1.4], ["ABZ", 57.15, -2.09], ["EXT", 50.72, -3.53],
+  ["NWI", 52.63, 1.3], ["INV", 57.48, -4.22],
+];
+
+function nearestHub(lat: number, lon: number) {
+  let best = "LON", bestD = Infinity;
+  for (const [code, la, lo] of UK_HUBS) {
+    const dLat = (la - lat) * 111;
+    const dLon = (lo - lon) * 111 * Math.cos((lat * Math.PI) / 180);
+    const d = dLat * dLat + dLon * dLon;
+    if (d < bestD) { bestD = d; best = code; }
+  }
+  return best;
+}
 
 const PLACES: Record<string, string> = {
   LON: "London", MAN: "Manchester", BHX: "Birmingham", EDI: "Edinburgh", GLA: "Glasgow", BRS: "Bristol",
@@ -22,6 +46,9 @@ const PLACES: Record<string, string> = {
   SOF: "Sofia", DBV: "Dubrovnik", SPU: "Split", CFU: "Corfu", HER: "Heraklion", LCA: "Larnaca", MLA: "Malta",
   CAI: "Cairo", TLV: "Tel Aviv", AMM: "Amman", BKK: "Bangkok", SIN: "Singapore", TYO: "Tokyo", LAX: "Los Angeles",
   MIA: "Miami", ORL: "Orlando", TOR: "Toronto", MEX: "Mexico City", CUN: "Cancun",
+  LHR: "Heathrow", LGW: "Gatwick", STN: "Stansted", LTN: "Luton", LCY: "London City", EMA: "East Midlands",
+  DSA: "Doncaster Sheffield", SOU: "Southampton", ABZ: "Aberdeen", EXT: "Exeter", NWI: "Norwich",
+  BOH: "Bournemouth", INV: "Inverness", NQY: "Newquay", ORK: "Cork",
 };
 
 const DESTS: Record<string, string> = {
@@ -34,7 +61,7 @@ const DESTS: Record<string, string> = {
   tokyo: "TYO", miami: "MIA", orlando: "ORL", cancun: "CUN",
 };
 
-function parseQuery(q: string) {
+function parseQuery(q: string, defaultOrigin: string) {
   const text = q.toLowerCase();
   const now = new Date();
 
@@ -68,20 +95,26 @@ function parseQuery(q: string) {
   else if (/two weeks|2 weeks|fortnight/.test(text)) { minDays = 11; maxDays = 16; }
   else if (/\b(a|one|1) week\b|week off|week away|week long|weeks? holiday/.test(text)) { minDays = 5; maxDays = 9; }
 
-  // origin
-  let origin = "LON";
-  const from = text.match(/\bfrom\s+([a-z ]+?)(?:\s+(?:to|in|for|under|with|next|this|on)\b|[,.]|$)/);
-  if (from) {
-    const key = from[1].trim();
-    if (ORIGINS[key]) origin = ORIGINS[key];
-    else if (/^[a-z]{3}$/.test(key)) origin = key.toUpperCase();
+  // origin: "from Manchester" wins, otherwise the visitor's nearest UK airport
+  let origin = defaultOrigin;
+  let fromName = "";
+  const fromAt = text.search(/\b(?:from|leaving|departing|out of)\s+/);
+  if (fromAt >= 0) {
+    const after = text.slice(fromAt).replace(/^(?:from|leaving|departing|out of)\s+/, "");
+    const names = Object.keys(ORIGINS).sort((x, y) => y.length - x.length);
+    const hit = names.find((n) => new RegExp("^" + n + "\\b").test(after));
+    if (hit) { origin = ORIGINS[hit]; fromName = hit; }
+    else {
+      const code = after.match(/^([a-z]{3})\b/);
+      if (code && PLACES[code[1].toUpperCase()]) origin = code[1].toUpperCase();
+    }
   }
 
   // destination
   let destination: string | null = null;
   for (const name of Object.keys(DESTS)) {
     if (new RegExp("\\bto\\s+" + name + "\\b|\\b" + name + "\\b").test(text)) {
-      if (from && from[1].trim() === name) continue;
+      if (fromName === name) continue;
       destination = DESTS[name];
       break;
     }
@@ -110,11 +143,11 @@ function hm(mins: number) {
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "public, max-age=300" },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, max-age=300" },
   });
 }
 
-export default async (req: Request) => {
+export default async (req: Request, context: any) => {
   const token = Netlify.env.get("TRAVELPAYOUTS_TOKEN");
   const marker = Netlify.env.get("TRAVELPAYOUTS_MARKER") || "779486";
   const market = Netlify.env.get("TRAVELPAYOUTS_MARKET");
@@ -124,7 +157,13 @@ export default async (req: Request) => {
   const q = (new URL(req.url).searchParams.get("q") || "").trim().slice(0, 300);
   if (!q) return json({ error: "Tell us where you'd like to go, or your budget." }, 400);
 
-  const p = parseQuery(q);
+  const geo = context && context.geo;
+  const geoOrigin =
+    geo && geo.country && geo.country.code === "GB" && typeof geo.latitude === "number" && typeof geo.longitude === "number"
+      ? nearestHub(geo.latitude, geo.longitude)
+      : "LON";
+
+  const p = parseQuery(q, geoOrigin);
 
   const params = new URLSearchParams({
     origin: p.origin,
@@ -168,7 +207,7 @@ export default async (req: Request) => {
       query: p,
       results: [],
       message: p.budget
-        ? `We couldn't find a trip from London for £${p.budget} or less in that month. Try a higher budget or a different month.`
+        ? `We couldn't find a trip from ${PLACES[p.origin] || p.origin} for £${p.budget} or less in that month. Try a higher budget or a different month.`
         : "We couldn't find flights for that. Try a different month or destination.",
     });
   }
