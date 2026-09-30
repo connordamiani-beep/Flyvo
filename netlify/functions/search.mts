@@ -49,7 +49,50 @@ const PLACES: Record<string, string> = {
   LHR: "Heathrow", LGW: "Gatwick", STN: "Stansted", LTN: "Luton", LCY: "London City", EMA: "East Midlands",
   DSA: "Doncaster Sheffield", SOU: "Southampton", ABZ: "Aberdeen", EXT: "Exeter", NWI: "Norwich",
   BOH: "Bournemouth", INV: "Inverness", NQY: "Newquay", ORK: "Cork",
+  GDN: "Gdansk", WRO: "Wroclaw", POZ: "Poznan", KTW: "Katowice", BUH: "Bucharest", SKP: "Skopje", TIA: "Tirana",
+  BEG: "Belgrade", ZAG: "Zagreb", LJU: "Ljubljana", BTS: "Bratislava", VNO: "Vilnius", KUN: "Kaunas",
+  TRN: "Turin", BLQ: "Bologna", PSA: "Pisa", VRN: "Verona", CTA: "Catania", PMO: "Palermo", CAG: "Cagliari", BRI: "Bari",
+  BIO: "Bilbao", SCQ: "Santiago de Compostela", GRX: "Granada", SPC: "La Palma", MAH: "Menorca", XRY: "Jerez",
+  GRO: "Girona", REU: "Reus", FNC: "Funchal", PDL: "Ponta Delgada", NCE: "Nice", MRS: "Marseille", LYS: "Lyon",
+  TLS: "Toulouse", BOD: "Bordeaux", NTE: "Nantes", SXB: "Strasbourg", MUC: "Munich", FRA: "Frankfurt",
+  HAM: "Hamburg", DUS: "Dusseldorf", CGN: "Cologne", STR: "Stuttgart", NUE: "Nuremberg", LEJ: "Leipzig", DRS: "Dresden",
+  SNN: "Shannon", NOC: "Knock", GOT: "Gothenburg", MMA: "Malmo", BGO: "Bergen", TOS: "Tromso", AAR: "Aarhus", BLL: "Billund",
+  SKG: "Thessaloniki", RHO: "Rhodes", JMK: "Mykonos", JTR: "Santorini", ZTH: "Zante", KGS: "Kos", CHQ: "Chania",
+  AYT: "Antalya", DLM: "Dalaman", BJV: "Bodrum", ADB: "Izmir", PFO: "Paphos", TUN: "Tunis", AGA: "Agadir",
+  CMN: "Casablanca", SSH: "Sharm El Sheikh", HRG: "Hurghada", DOH: "Doha", AUH: "Abu Dhabi", DEL: "Delhi",
+  BOM: "Mumbai", HKG: "Hong Kong", CHI: "Chicago", WAS: "Washington", SFO: "San Francisco", LAS: "Las Vegas",
+  BOS: "Boston", YMQ: "Montreal", YTO: "Toronto",
 };
+
+// Looks up names for any airport or city not listed above (cached while the function stays warm)
+let cityNames: Record<string, string> | null = null;
+
+async function loadCityNames(): Promise<Record<string, string>> {
+  if (cityNames) return cityNames;
+  const urls = [
+    "https://api.travelpayouts.com/data/en/cities.json",
+    "https://api.travelpayouts.com/data/cities.json",
+  ];
+  for (const url of urls) {
+    try {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 4000);
+      const res = await fetch(url, { signal: ctl.signal });
+      clearTimeout(timer);
+      if (!res.ok) continue;
+      const list: any[] = await res.json();
+      const map: Record<string, string> = {};
+      for (const c of list) {
+        const name = (c.name_translations && c.name_translations.en) || c.name;
+        if (c.code && name) map[c.code] = name;
+      }
+      if (Object.keys(map).length) { cityNames = map; return map; }
+    } catch {
+      // try the next address
+    }
+  }
+  return {};
+}
 
 const DESTS: Record<string, string> = {
   lisbon: "LIS", barcelona: "BCN", paris: "PAR", rome: "ROM", amsterdam: "AMS", tenerife: "TCI",
@@ -228,10 +271,14 @@ export default async (req: Request, context: any) => {
   if (fastest) picked.push(["Shortest flight", fastest]);
   if (third) picked.push(["Also worth a look", third]);
 
+  const unknown = picked.map(([, o]) => o.destination).filter((c: string) => !PLACES[c]);
+  const looked: Record<string, string> = unknown.length ? await loadCityNames() : {};
+  const nameOf = (code: string) => PLACES[code] || looked[code] || code;
+
   const results = picked.map(([tag, o]) => {
     const n = nights(o.departure_at, o.return_at);
-    const city = PLACES[o.destination] || o.destination;
-    const originName = PLACES[o.origin] || o.origin;
+    const city = nameOf(o.destination);
+    const originName = nameOf(o.origin);
     const stops = o.transfers === 0 ? "Direct" : `${o.transfers} stop${o.transfers > 1 ? "s" : ""}`;
     const left = p.budget ? p.budget - Math.round(o.price) : null;
     const take =
@@ -243,7 +290,7 @@ export default async (req: Request, context: any) => {
     return {
       tag,
       city,
-      route: `${originName} → ${o.destination}`,
+      route: `${originName} → ${city}`,
       dates: shortDates(o.departure_at, o.return_at),
       price: "£" + Math.round(o.price),
       stops: `${stops}${o.duration_to ? " · " + hm(o.duration_to) : ""}`,
