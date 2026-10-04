@@ -200,6 +200,10 @@ input::placeholder{color:#5B6472;opacity:1}
     <span id="fv-label" style="font-size: 13px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #8A5A00">Example search</span>
     <h2 id="fv-title" style="margin: 0; font-size: clamp(28px, 3.4vw, 40px); line-height: 1.12; letter-spacing: -0.03em; color: #0E1630">"I have £200 and a week off in December"</h2>
     <p id="fv-sub" style="margin: 0; font-size: 17px; line-height: 1.6; color: #334155">Flyvo picks three flights that fit and tells you which one it would book. Sample results shown for illustration. Type your own trip above to see live prices.</p>
+    <div id="fv-from-row" style="display: none; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px">
+      <label for="fv-from" style="font-size: 15px; font-weight: 500; color: #334155">Flying from</label>
+      <select id="fv-from" style="min-height: 44px; padding: 0 40px 0 16px; border-radius: 999px; border: 1px solid #E2E8F0; background: #ffffff url(&quot;data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' fill='none' stroke='%230E1630' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E&quot;) no-repeat right 16px center; appearance: none; -webkit-appearance: none; font-family: inherit; font-size: 15px; font-weight: 600; color: #0E1630; cursor: pointer"><option value="LON">London (any airport)</option><option value="LHR">London Heathrow</option><option value="LGW">London Gatwick</option><option value="STN">London Stansted</option><option value="LTN">London Luton</option><option value="LCY">London City</option><option value="MAN">Manchester</option><option value="BHX">Birmingham</option><option value="LBA">Leeds Bradford</option><option value="LPL">Liverpool</option><option value="NCL">Newcastle</option><option value="EMA">East Midlands</option><option value="BRS">Bristol</option><option value="CWL">Cardiff</option><option value="SOU">Southampton</option><option value="BOH">Bournemouth</option><option value="EXT">Exeter</option><option value="NQY">Newquay</option><option value="NWI">Norwich</option><option value="EDI">Edinburgh</option><option value="GLA">Glasgow</option><option value="ABZ">Aberdeen</option><option value="INV">Inverness</option><option value="BFS">Belfast</option></select>
+    </div>
   </div>
 
   <div id="fv-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px">
@@ -368,6 +372,18 @@ input::placeholder{color:#5B6472;opacity:1}
   var title = document.getElementById('fv-title');
   var sub = document.getElementById('fv-sub');
   var busy = false;
+  var fromSel = document.getElementById('fv-from');
+  var fromRow = document.getElementById('fv-from-row');
+  var lastText = '';
+  function savedFrom() { try { return localStorage.getItem('flyvo-from') || ''; } catch (err) { return ''; } }
+  function showFrom(code) {
+    if (!code) return;
+    if (!fromSel.querySelector('option[value="' + code + '"]')) {
+      var o = document.createElement('option'); o.value = code; o.textContent = code; fromSel.appendChild(o);
+    }
+    fromSel.value = code;
+    fromRow.style.display = 'flex';
+  }
 
   function esc(t) {
     return String(t == null ? '' : t).replace(/[&<>"']/g, function (c) {
@@ -402,21 +418,25 @@ input::placeholder{color:#5B6472;opacity:1}
     grid.innerHTML = '<div style="grid-column: 1 / -1; padding: 32px; border-radius: 20px; background: #ffffff; border: 1px solid #E8EDF4; font-size: 16px; line-height: 1.6; color: #334155">' + esc(text) + '</div>';
   }
 
-  function search(e) {
-    if (e) e.preventDefault();
-    var text = q.value.trim();
+  function search(e, picked) {
+    if (e && e.preventDefault) e.preventDefault();
+    var text = picked ? lastText : q.value.trim();
     if (!text) { q.focus(); note.textContent = 'Tell us where you want to go, or your budget.'; return; }
     if (busy) return;
     busy = true;
+    lastText = text;
     note.textContent = 'Searching for flights\u2026';
     label.textContent = 'Searching';
     title.textContent = '\u201C' + text + '\u201D';
     message('Looking for the best flights\u2026');
     document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
 
-    fetch('/api/search?q=' + encodeURIComponent(text))
+    var from = picked || savedFrom();
+    var url = '/api/search?q=' + encodeURIComponent(text) + (from ? '&from=' + encodeURIComponent(from) : '') + (picked ? '&override=1' : '');
+    fetch(url)
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (x) {
+        if (x.d && x.d.query) showFrom(x.d.query.origin);
         if (!x.ok) { label.textContent = 'Oops'; message(x.d.error || 'Something went wrong. Please try again.'); note.textContent = 'Prices in \u00A3 \u00B7 You book directly with the airline'; return; }
         if (!x.d.results || !x.d.results.length) { label.textContent = 'No matches'; message(x.d.message || 'No flights found. Try a different month or budget.'); note.textContent = 'Prices in \u00A3 \u00B7 You book directly with the airline'; return; }
         label.textContent = 'Your results';
@@ -438,6 +458,10 @@ input::placeholder{color:#5B6472;opacity:1}
   document.getElementById('fv-surprise').addEventListener('click', function () { setQ('Anywhere warm, under \u00A3150, next month'); });
   Array.prototype.forEach.call(document.querySelectorAll('[data-go]'), function (a) { a.addEventListener('click', search); });
   q.addEventListener('keydown', function (e) { if (e.key === 'Enter') search(e); });
+  fromSel.addEventListener('change', function () {
+    try { localStorage.setItem('flyvo-from', fromSel.value); } catch (err) {}
+    if (lastText) search(null, fromSel.value);
+  });
 
   var intro = document.querySelector('.fv-intro');
   if (intro) setTimeout(function () { intro.style.display = 'none'; }, 6600);
