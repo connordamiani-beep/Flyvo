@@ -248,8 +248,9 @@ Rules:
               min_nights: { type: "integer" },
               max_nights: { type: "integer" },
               direct: { type: "boolean" },
+              warm: { type: "boolean", description: "true if they want warm, hot, sunny or beach weather" },
             },
-            required: ["origin", "destinations", "budget", "month", "min_nights", "max_nights", "direct"],
+            required: ["origin", "destinations", "budget", "month", "min_nights", "max_nights", "direct", "warm"],
           },
         }],
         tool_choice: { type: "tool", name: "set_filters" },
@@ -308,7 +309,8 @@ Rules:
       destination: destinations.length === 1 ? destinations[0] : null,
       destinations,
       direct: a.direct === true || a.direct === "true",
-      warm: false,
+      // Warm weather is checked against Flyvo's own month-by-month list, not left to Claude's guess
+      warm: a.warm === true || a.warm === "true" || parseQuery(q, defaultOrigin).warm,
     };
   } catch (err: any) {
     aiStatus = err && err.name === "AbortError" ? "Claude took too long" : "Claude request failed: " + String(err && err.message || err).slice(0, 200);
@@ -335,7 +337,7 @@ function hm(mins: number) {
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "private, max-age=300" },
+    headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" },
   });
 }
 
@@ -393,11 +395,12 @@ export default async (req: Request, context: any) => {
     return n >= p.minDays && n <= p.maxDays;
   });
   // Claude picked a shortlist of places that fit (e.g. warm in November): keep only those
-  const wanted = p.destinations.length > 1 ? new Set(p.destinations) : null;
-  const inWeather = wanted
-    ? inLength.filter((o) => wanted.has(o.destination) || wanted.has(o.destination_airport))
-    : p.warm && !p.destination
-      ? inLength.filter((o) => isWarm(o.destination, p.monthIndex))
+  // Warm requests use Flyvo's own weather list; other requests (nightlife, skiing...) use Claude's shortlist
+  const wanted = !p.warm && p.destinations.length > 1 ? new Set(p.destinations) : null;
+  const inWeather = p.warm && !p.destination
+    ? inLength.filter((o) => isWarm(o.destination, p.monthIndex) || isWarm(o.destination_airport, p.monthIndex))
+    : wanted
+      ? inLength.filter((o) => wanted.has(o.destination) || wanted.has(o.destination_airport))
       : inLength;
   const inBudget = p.budget ? inWeather.filter((o) => o.price <= p.budget!) : inWeather;
 
