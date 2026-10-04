@@ -417,7 +417,11 @@ export default async (req: Request, context: any) => {
     : wanted
       ? inLength.filter((o) => wanted.has(o.destination) || wanted.has(o.destination_airport))
       : inLength;
-  const inBudget = p.budget ? inWeather.filter((o) => o.price <= p.budget!) : inWeather;
+  const withinBudget = p.budget ? inWeather.filter((o) => o.price <= p.budget!) : inWeather;
+
+  // Nothing fits the budget: show the closest options just above it (up to 50% over) instead of a dead end
+  const overBudget = !!p.budget && !withinBudget.length;
+  const inBudget = overBudget ? inWeather.filter((o) => o.price <= p.budget! * 1.5) : withinBudget;
 
   if (!inBudget.length) {
     return json({
@@ -446,6 +450,11 @@ export default async (req: Request, context: any) => {
     pool.push(o);
   }
 
+  const picked: Array<[string, any]> = [];
+  if (overBudget) {
+    // Just the closest few, cheapest first
+    for (const o of pool.slice(0, 6)) picked.push(["Just over budget", o]);
+  } else {
   // Three highlighted picks first
   const cheapest = pool[0];
   const rest = pool.slice(1);
@@ -453,7 +462,7 @@ export default async (req: Request, context: any) => {
     ? [...rest].sort((a, b) => (a.duration_to || 9999) - (b.duration_to || 9999))[0]
     : undefined;
   const third = rest.find((o) => o !== fastest && o.transfers === 0) || rest.find((o) => o !== fastest);
-  const picked: Array<[string, any]> = [["Cheapest", cheapest]];
+  picked.push(["Cheapest", cheapest]);
   if (fastest) picked.push(["Shortest flight", fastest]);
   if (third) picked.push(["Also worth a look", third]);
 
@@ -462,6 +471,7 @@ export default async (req: Request, context: any) => {
     if (picked.length >= MAX_RESULTS) break;
     if (picked.some(([, x]) => x === o)) continue;
     picked.push(["More options", o]);
+  }
   }
 
   const unknown = picked.map(([, o]) => o.destination).filter((c: string) => !PLACES[c]);
@@ -480,6 +490,7 @@ export default async (req: Request, context: any) => {
     const take =
       fromNearby +
       (left !== null && left >= 0 ? `£${left} of your £${p.budget} budget left for the rest of the trip. ` : "") +
+      (left !== null && left < 0 ? `Nothing fitted your £${p.budget} budget, but this is only £${-left} over. ` : "") +
       `${n} night${n === 1 ? "" : "s"} away, ${o.transfers === 0 ? "flying direct" : stops.toLowerCase() + " each way at most"}.` +
       (tag === "Cheapest" ? " This is the lowest price we found." : tag === "Shortest flight" ? " Gets you there fastest of the options." : "");
     const link = String(o.link || "");
@@ -496,7 +507,12 @@ export default async (req: Request, context: any) => {
     };
   });
 
-  return json({ ai: aiStatus, query: p, results });
+  return json({
+    ai: aiStatus,
+    query: p,
+    results,
+    ...(overBudget ? { message: `Nothing came in under £${p.budget}, so here are the closest options just above it.` } : {}),
+  });
 };
 
 export const config = { path: "/api/search" };
