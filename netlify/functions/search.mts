@@ -2,6 +2,9 @@
 // Needs one secret environment variable: TRAVELPAYOUTS_TOKEN
 // Optional: TRAVELPAYOUTS_MARKER (defaults to 779486), TRAVELPAYOUTS_MARKET
 
+// How many flights to send back in total (3 highlighted picks + the rest as "More options")
+const MAX_RESULTS = 15;
+
 const MONTHS = ["january","february","march","april","may","june","july","august","september","october","november","december"];
 
 const ORIGINS: Record<string, string> = {
@@ -104,6 +107,34 @@ const DESTS: Record<string, string> = {
   tokyo: "TYO", miami: "MIA", orlando: "ORL", cancun: "CUN",
 };
 
+// Warm-weather destinations, grouped by when they're reliably warm (daytime highs around 20°C+).
+// Month numbers: 0 = January ... 11 = December.
+const WARM_ALL_YEAR = new Set([
+  // Tropics, Gulf, Red Sea
+  "HRG", "SSH", "DXB", "DOH", "AUH", "BKK", "SIN", "CUN", "MIA", "BOM",
+  // Winter sun: Canaries, Madeira, southern Morocco, Egypt, Florida, Israel
+  "TCI", "TFS", "LPA", "ACE", "FUE", "SPC", "FNC", "AGA", "CAI", "ORL", "TLV", "DEL",
+]);
+// Warm spring to late autumn (April–November)
+const WARM_SPRING_TO_AUTUMN = new Set([
+  "LCA", "PFO", "MLA", "RAK", "AYT", "DLM", "BJV", "CTA", "PMO", "HER", "CHQ", "RHO",
+  "AGP", "ALC", "FAO", "SVQ", "HKG", "LAS", "AMM", "TUN", "CMN", "XRY", "GRX",
+]);
+// Warm in summer only (May–October)
+const WARM_SUMMER = new Set([
+  "BCN", "PMI", "IBZ", "MAH", "ATH", "JMK", "JTR", "ZTH", "KGS", "CFU", "SKG", "SPU", "DBV",
+  "NCE", "MRS", "LIS", "OPO", "VLC", "MAD", "NAP", "ROM", "BRI", "CAG", "FLR", "PSA", "IST",
+  "ADB", "TIA", "REU", "GRO", "PDL", "LAX", "SFO", "NYC", "WAS", "BOS", "CHI", "TOK", "TYO",
+  "SOF", "BUD", "VCE", "MIL", "BLQ", "VRN", "TRN", "SKP", "BEG", "TLS", "BOD",
+]);
+
+function isWarm(code: string, monthIndex: number) {
+  if (WARM_ALL_YEAR.has(code)) return true;
+  if (WARM_SPRING_TO_AUTUMN.has(code)) return monthIndex >= 3 && monthIndex <= 10;
+  if (WARM_SUMMER.has(code)) return monthIndex >= 4 && monthIndex <= 9;
+  return false;
+}
+
 function parseQuery(q: string, defaultOrigin: string) {
   const text = q.toLowerCase();
   const now = new Date();
@@ -133,7 +164,7 @@ function parseQuery(q: string, defaultOrigin: string) {
   const month = `${year}-${String(monthIndex + 1).padStart(2, "0")}`;
 
   // trip length
-  let minDays = 0, maxDays = 60;
+  let minDays = 2, maxDays = 60;
   if (/weekend|long weekend|city break/.test(text)) { minDays = 2; maxDays = 4; }
   else if (/two weeks|2 weeks|fortnight/.test(text)) { minDays = 11; maxDays = 16; }
   else if (/\b(a|one|1) week\b|week off|week away|week long|weeks? holiday/.test(text)) { minDays = 5; maxDays = 9; }
@@ -164,7 +195,95 @@ function parseQuery(q: string, defaultOrigin: string) {
   }
 
   const direct = /\b(direct|non-?stop)\b/.test(text);
-  return { budget, month, monthIndex, minDays, maxDays, origin, destination, direct };
+  const warm = /\b(warm|warmer|hot|heat|sun|sunny|sunshine|beach|beaches|tropical|winter sun)\b/.test(text);
+  return { budget, month, monthIndex, minDays, maxDays, origin, destination, direct, warm };
+}
+
+// Asks Claude to understand the search. Returns null (so the keyword parser is used instead)
+// if there's no ANTHROPIC_API_KEY, or Claude is slow or gives an unusable answer.
+// Records what happened with Claude on the last search, shown as "ai" in /api/search responses
+let aiStatus = "not tried";
+
+async function askClaude(q: string, defaultOrigin: string) {
+  const key = Netlify.env.get("ANTHROPIC_API_KEY");
+  if (!key) { aiStatus = "off: no ANTHROPIC_API_KEY found (redeploy after adding it)"; return null; }
+  aiStatus = "trying";
+  const today = new Date().toISOString().slice(0, 10);
+
+  const system = `You turn a traveller's request into flight search filters for Flyvo, a UK flight finder. Today is ${today}. If the traveller doesn't say where they're flying from, use null for origin (we'll use their nearest airport, ${defaultOrigin}).
+
+Reply with ONLY a JSON object, no other text:
+{"origin": string|null, "destinations": string[], "budget": number|null, "month": "YYYY-MM", "min_nights": number, "max_nights": number, "direct": boolean}
+
+Rules:
+- Codes are 3-letter IATA codes. Prefer city codes where one exists (LON, PAR, ROM, MIL, NYC, STO, TYO, TCI for Tenerife), and also include the main airport code when it differs (e.g. TCI and TFS).
+- A named place: destinations holds just that place. A country or region (e.g. "Greece", "the Canaries"): its main holiday airports.
+- A description instead of a place (warm, beach, skiing, nightlife, romantic, cheap city break, etc.): list 15-30 destinations with direct or easy flights from the UK that genuinely fit in the travel month. Be strict about weather: "warm" or "sunny" means typical daytime highs of at least 20°C in that month; skiing means reliable snow that month.
+- No preference about where at all: destinations is [].
+- budget: the most they want to spend on flights in GBP, or null.
+- month: the month they mean. "Next month" is the month after today's. No month given: next month. Never a month before today's.
+- Trip length: weekend 2-4 nights, a week 5-9, two weeks 11-16, a specific number of nights ±1. Not stated: 2-14.
+- direct: true only if they ask for direct or non-stop flights.`;
+
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 7000);
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      signal: ctl.signal,
+      headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 400,
+        system,
+        messages: [{ role: "user", content: q }],
+      }),
+    });
+    clearTimeout(timer);
+    if (!res.ok) {
+      let detail = "";
+      try { detail = (await res.text()).slice(0, 300); } catch {}
+      aiStatus = `Claude error ${res.status}: ${detail}`;
+      return null;
+    }
+
+    const data = await res.json();
+    const text = (data.content || []).map((c: any) => (c.type === "text" ? c.text : "")).join("");
+    const s = text.indexOf("{"), e = text.lastIndexOf("}");
+    if (s < 0 || e < s) { aiStatus = "Claude replied but not with filters"; return null; }
+    const a = JSON.parse(text.slice(s, e + 1));
+
+    const code = (x: any) => (typeof x === "string" && /^[A-Za-z]{3}$/.test(x) ? x.toUpperCase() : null);
+    const destinations: string[] = Array.isArray(a.destinations)
+      ? [...new Set(a.destinations.map(code).filter(Boolean) as string[])].slice(0, 40)
+      : [];
+
+    const thisMonth = today.slice(0, 7);
+    let month: string = typeof a.month === "string" && /^\d{4}-\d{2}$/.test(a.month) ? a.month : "";
+    if (!month || month < thisMonth) month = parseQuery(q, defaultOrigin).month;
+    const monthIndex = parseInt(month.slice(5), 10) - 1;
+
+    const minDays = Number.isFinite(a.min_nights) ? Math.max(1, Math.round(a.min_nights)) : 2;
+    let maxDays = Number.isFinite(a.max_nights) ? Math.round(a.max_nights) : 14;
+    if (maxDays < minDays) maxDays = minDays;
+
+    aiStatus = "on";
+    return {
+      budget: typeof a.budget === "number" && a.budget > 0 ? Math.round(a.budget) : null,
+      month,
+      monthIndex,
+      minDays,
+      maxDays,
+      origin: code(a.origin) || defaultOrigin,
+      destination: destinations.length === 1 ? destinations[0] : null,
+      destinations,
+      direct: a.direct === true,
+      warm: false,
+    };
+  } catch (err: any) {
+    aiStatus = err && err.name === "AbortError" ? "Claude took too long" : "Claude request failed: " + String(err && err.message || err).slice(0, 200);
+    return null;
+  }
 }
 
 function nights(dep: string, ret: string) {
@@ -206,7 +325,7 @@ export default async (req: Request, context: any) => {
       ? nearestHub(geo.latitude, geo.longitude)
       : "LON";
 
-  const p = parseQuery(q, geoOrigin);
+  const p = (await askClaude(q, geoOrigin)) || { ...parseQuery(q, geoOrigin), destinations: [] as string[] };
 
   const params = new URLSearchParams({
     origin: p.origin,
@@ -243,33 +362,59 @@ export default async (req: Request, context: any) => {
     const n = nights(o.departure_at, o.return_at);
     return n >= p.minDays && n <= p.maxDays;
   });
-  const inBudget = p.budget ? inLength.filter((o) => o.price <= p.budget!) : inLength;
+  // Claude picked a shortlist of places that fit (e.g. warm in November): keep only those
+  const wanted = p.destinations.length > 1 ? new Set(p.destinations) : null;
+  const inWeather = wanted
+    ? inLength.filter((o) => wanted.has(o.destination) || wanted.has(o.destination_airport))
+    : p.warm && !p.destination
+      ? inLength.filter((o) => isWarm(o.destination, p.monthIndex))
+      : inLength;
+  const inBudget = p.budget ? inWeather.filter((o) => o.price <= p.budget!) : inWeather;
 
   if (!inBudget.length) {
     return json({
+      ai: aiStatus,
       query: p,
       results: [],
-      message: p.budget
+      message: wanted || (p.warm && !p.destination)
+        ? `We couldn't find a trip that fits from ${PLACES[p.origin] || p.origin}${p.budget ? ` for £${p.budget} or less` : ""} that month. Try a higher budget or a different month.`
+        : p.budget
         ? `We couldn't find a trip from ${PLACES[p.origin] || p.origin} for £${p.budget} or less in that month. Try a higher budget or a different month.`
         : "We couldn't find flights for that. Try a different month or destination.",
     });
   }
 
-  // Pick up to three different destinations
+  // Remove duplicates. Browsing ("anywhere for £200"): one flight per destination.
+  // A named destination ("Barcelona in December"): one flight per date pair and stop count,
+  // so the visitor sees different dates instead of just one result.
   const seen = new Set<string>();
-  const distinct: any[] = [];
+  const pool: any[] = [];
   for (const o of inBudget) {
-    if (seen.has(o.destination)) continue;
-    seen.add(o.destination);
-    distinct.push(o);
+    const key = p.destination
+      ? `${String(o.origin_airport || o.origin)}|${String(o.departure_at).slice(0, 10)}|${String(o.return_at).slice(0, 10)}|${o.transfers}`
+      : o.destination;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    pool.push(o);
   }
-  const cheapest = distinct[0];
-  const rest = distinct.slice(1);
-  const fastest = [...rest].sort((a, b) => (a.duration_to || 9999) - (b.duration_to || 9999))[0];
+
+  // Three highlighted picks first
+  const cheapest = pool[0];
+  const rest = pool.slice(1);
+  const fastest = rest.length
+    ? [...rest].sort((a, b) => (a.duration_to || 9999) - (b.duration_to || 9999))[0]
+    : undefined;
   const third = rest.find((o) => o !== fastest && o.transfers === 0) || rest.find((o) => o !== fastest);
   const picked: Array<[string, any]> = [["Cheapest", cheapest]];
   if (fastest) picked.push(["Shortest flight", fastest]);
   if (third) picked.push(["Also worth a look", third]);
+
+  // Then everything else, cheapest first, up to MAX_RESULTS in total
+  for (const o of pool) {
+    if (picked.length >= MAX_RESULTS) break;
+    if (picked.some(([, x]) => x === o)) continue;
+    picked.push(["More options", o]);
+  }
 
   const unknown = picked.map(([, o]) => o.destination).filter((c: string) => !PLACES[c]);
   const looked: Record<string, string> = unknown.length ? await loadCityNames() : {};
@@ -299,7 +444,7 @@ export default async (req: Request, context: any) => {
     };
   });
 
-  return json({ query: p, results });
+  return json({ ai: aiStatus, query: p, results });
 };
 
 export const config = { path: "/api/search" };
