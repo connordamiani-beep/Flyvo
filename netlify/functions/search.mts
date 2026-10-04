@@ -212,8 +212,7 @@ async function askClaude(q: string, defaultOrigin: string) {
 
   const system = `You turn a traveller's request into flight search filters for Flyvo, a UK flight finder. Today is ${today}. If the traveller doesn't say where they're flying from, use null for origin (we'll use their nearest airport, ${defaultOrigin}).
 
-Reply with ONLY a JSON object, no other text:
-{"origin": string|null, "destinations": string[], "budget": number|null, "month": "YYYY-MM", "min_nights": number, "max_nights": number, "direct": boolean}
+Always answer by calling the set_filters tool.
 
 Rules:
 - Codes are 3-letter IATA codes. Prefer city codes where one exists (LON, PAR, ROM, MIL, NYC, STO, TYO, TCI for Tenerife), and also include the main airport code when it differs (e.g. TCI and TFS).
@@ -234,8 +233,26 @@ Rules:
       headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
-        max_tokens: 400,
+        max_tokens: 1000,
         system,
+        tools: [{
+          name: "set_filters",
+          description: "Flight search filters for the traveller's request",
+          input_schema: {
+            type: "object",
+            properties: {
+              origin: { type: ["string", "null"], description: "3-letter IATA code, or null if not stated" },
+              destinations: { type: "array", items: { type: "string" }, description: "3-letter IATA codes, or [] for anywhere" },
+              budget: { type: ["number", "null"], description: "Max flight spend in GBP, or null" },
+              month: { type: "string", description: "YYYY-MM" },
+              min_nights: { type: "integer" },
+              max_nights: { type: "integer" },
+              direct: { type: "boolean" },
+            },
+            required: ["origin", "destinations", "budget", "month", "min_nights", "max_nights", "direct"],
+          },
+        }],
+        tool_choice: { type: "tool", name: "set_filters" },
         messages: [{ role: "user", content: q }],
       }),
     });
@@ -248,12 +265,25 @@ Rules:
     }
 
     const data = await res.json();
-    const text = (data.content || []).map((c: any) => (c.type === "text" ? c.text : "")).join("");
-    const s = text.indexOf("{"), e = text.lastIndexOf("}");
-    if (s < 0 || e < s) { aiStatus = "Claude replied but not with filters"; return null; }
-    const a = JSON.parse(text.slice(s, e + 1));
+    const tool = (data.content || []).find((c: any) => c.type === "tool_use");
+    let a: any = tool ? tool.input : null;
+    if (!a) {
+      const text = (data.content || []).map((c: any) => (c.type === "text" ? c.text : "")).join("");
+      const s = text.indexOf("{"), e = text.lastIndexOf("}");
+      if (s < 0 || e < s) { aiStatus = "Claude replied but not with filters"; return null; }
+      a = JSON.parse(text.slice(s, e + 1));
+    }
 
-    const code = (x: any) => (typeof x === "string" && /^[A-Za-z]{3}$/.test(x) ? x.toUpperCase() : null);
+    // Accept "TCI", {code: "TCI"} or {iata: "TCI"}
+    const code = (x: any) => {
+      const v = typeof x === "string" ? x : x && (x.code || x.iata || x.city_code);
+      return typeof v === "string" && /^[A-Za-z]{3}$/.test(v.trim()) ? v.trim().toUpperCase() : null;
+    };
+    // Accept 150, "150" or "£150"
+    const num = (x: any) => {
+      const n = typeof x === "number" ? x : parseFloat(String(x ?? "").replace(/[^\d.]/g, ""));
+      return Number.isFinite(n) && n > 0 ? n : null;
+    };
     const destinations: string[] = Array.isArray(a.destinations)
       ? [...new Set(a.destinations.map(code).filter(Boolean) as string[])].slice(0, 40)
       : [];
@@ -263,13 +293,13 @@ Rules:
     if (!month || month < thisMonth) month = parseQuery(q, defaultOrigin).month;
     const monthIndex = parseInt(month.slice(5), 10) - 1;
 
-    const minDays = Number.isFinite(a.min_nights) ? Math.max(1, Math.round(a.min_nights)) : 2;
-    let maxDays = Number.isFinite(a.max_nights) ? Math.round(a.max_nights) : 14;
+    const minDays = num(a.min_nights) ? Math.max(1, Math.round(num(a.min_nights)!)) : 2;
+    let maxDays = num(a.max_nights) ? Math.round(num(a.max_nights)!) : 14;
     if (maxDays < minDays) maxDays = minDays;
 
     aiStatus = "on";
     return {
-      budget: typeof a.budget === "number" && a.budget > 0 ? Math.round(a.budget) : null,
+      budget: num(a.budget) ? Math.round(num(a.budget)!) : null,
       month,
       monthIndex,
       minDays,
@@ -277,7 +307,7 @@ Rules:
       origin: code(a.origin) || defaultOrigin,
       destination: destinations.length === 1 ? destinations[0] : null,
       destinations,
-      direct: a.direct === true,
+      direct: a.direct === true || a.direct === "true",
       warm: false,
     };
   } catch (err: any) {
