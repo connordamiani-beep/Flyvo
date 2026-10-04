@@ -463,7 +463,16 @@ export default async (req: Request, context: any) => {
       ? nearestHub(geo.latitude, geo.longitude)
       : "LON";
 
-  const p = (await askClaude(q, geoOrigin)) || { ...parseQuery(q, geoOrigin), destinations: [] as string[] };
+  // Departure airport: one typed in the search wins; otherwise the visitor's chosen airport
+  // (?from=MAN, sent by the "Flying from" picker), otherwise the nearest one to their location.
+  // ?override=1 means the visitor just picked an airport, so it wins even over a typed one.
+  const params0 = new URL(req.url).searchParams;
+  const fromParam = (params0.get("from") || "").toUpperCase();
+  const fromOk = /^[A-Z]{3}$/.test(fromParam) && Object.values(ORIGINS).includes(fromParam);
+  const startOrigin = fromOk ? fromParam : geoOrigin;
+
+  const p = (await askClaude(q, startOrigin)) || { ...parseQuery(q, startOrigin), destinations: [] as string[] };
+  if (fromOk && params0.get("override") === "1") p.origin = fromParam;
 
   // Looks up return prices from one departure airport (null if the service didn't answer)
   async function fetchOffers(origin: string): Promise<any[] | null> {
