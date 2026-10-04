@@ -76,6 +76,7 @@ const PLACES: Record<string, string> = {
 
 // Looks up names for any airport or city not listed above (cached while the function stays warm)
 let cityNames: Record<string, string> | null = null;
+let cityCountries: Record<string, string> = {};
 
 async function loadCityNames(): Promise<Record<string, string>> {
   if (cityNames) return cityNames;
@@ -95,6 +96,7 @@ async function loadCityNames(): Promise<Record<string, string>> {
       for (const c of list) {
         const name = (c.name_translations && c.name_translations.en) || c.name;
         if (c.code && name) map[c.code] = name;
+        if (c.code && c.country_code) cityCountries[c.code] = c.country_code;
       }
       if (Object.keys(map).length) { cityNames = map; return map; }
     } catch {
@@ -102,6 +104,55 @@ async function loadCityNames(): Promise<Record<string, string>> {
     }
   }
   return {};
+}
+
+// Country for each destination, shown next to the city name (e.g. "Milan, Italy")
+const COUNTRY: Record<string, string> = {};
+const addCountry = (country: string, codes: string) => codes.split(" ").forEach((c) => (COUNTRY[c] = country));
+addCountry("Spain", "BCN TCI TFS AGP MAD PMI ALC IBZ LPA ACE FUE SVQ VLC BIO SCQ GRX SPC MAH XRY GRO REU");
+addCountry("Portugal", "LIS FAO OPO FNC PDL");
+addCountry("France", "PAR NCE MRS LYS TLS BOD NTE SXB");
+addCountry("Italy", "ROM MIL VCE FLR NAP TRN BLQ PSA VRN CTA PMO CAG BRI");
+addCountry("Greece", "ATH CFU HER SKG RHO JMK JTR ZTH KGS CHQ");
+addCountry("Turkey", "IST AYT DLM BJV ADB");
+addCountry("Germany", "BER MUC FRA HAM DUS CGN STR NUE LEJ DRS");
+addCountry("Poland", "KRK WAW GDN WRO POZ KTW");
+addCountry("Ireland", "DUB SNN NOC ORK");
+addCountry("Netherlands", "AMS"); addCountry("Belgium", "BRU"); addCountry("Czechia", "PRG");
+addCountry("Hungary", "BUD"); addCountry("Austria", "VIE"); addCountry("Denmark", "CPH AAR BLL");
+addCountry("Iceland", "REK"); addCountry("Switzerland", "GVA ZRH"); addCountry("Latvia", "RIX");
+addCountry("Estonia", "TLL"); addCountry("Finland", "HEL"); addCountry("Norway", "OSL BGO TOS");
+addCountry("Sweden", "STO GOT MMA"); addCountry("Bulgaria", "SOF"); addCountry("Croatia", "DBV SPU ZAG");
+addCountry("Cyprus", "LCA PFO"); addCountry("Malta", "MLA"); addCountry("Romania", "BUH");
+addCountry("North Macedonia", "SKP"); addCountry("Albania", "TIA"); addCountry("Serbia", "BEG");
+addCountry("Slovenia", "LJU"); addCountry("Slovakia", "BTS"); addCountry("Lithuania", "VNO KUN");
+addCountry("Morocco", "RAK AGA CMN"); addCountry("Egypt", "CAI SSH HRG"); addCountry("Tunisia", "TUN");
+addCountry("Israel", "TLV"); addCountry("Jordan", "AMM"); addCountry("UAE", "DXB AUH"); addCountry("Qatar", "DOH");
+addCountry("Thailand", "BKK"); addCountry("Singapore", "SIN"); addCountry("Japan", "TYO");
+addCountry("India", "DEL BOM"); addCountry("Hong Kong", "HKG"); addCountry("Mexico", "MEX CUN");
+addCountry("USA", "NYC LAX MIA ORL CHI WAS SFO LAS BOS"); addCountry("Canada", "TOR YMQ YTO");
+
+// Names for any other country, looked up by its 2-letter code (cached while the function stays warm)
+let countryNames: Record<string, string> | null = null;
+async function loadCountryNames(): Promise<Record<string, string>> {
+  if (countryNames) return countryNames;
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 4000);
+    const res = await fetch("https://api.travelpayouts.com/data/en/countries.json", { signal: ctl.signal });
+    clearTimeout(timer);
+    if (!res.ok) return {};
+    const list: any[] = await res.json();
+    const map: Record<string, string> = {};
+    for (const c of list) {
+      const name = (c.name_translations && c.name_translations.en) || c.name;
+      if (c.code && name) map[c.code] = name;
+    }
+    countryNames = map;
+    return map;
+  } catch {
+    return {};
+  }
 }
 
 const DESTS: Record<string, string> = {
@@ -522,9 +573,16 @@ export default async (req: Request, context: any) => {
   }
   }
 
-  const unknown = picked.map(([, o]) => o.destination).filter((c: string) => !PLACES[c]);
+  const unknown = picked.map(([, o]) => o.destination).filter((c: string) => !PLACES[c] || !COUNTRY[c]);
   const looked: Record<string, string> = unknown.length ? await loadCityNames() : {};
   const nameOf = (code: string) => PLACES[code] || looked[code] || code;
+  const needCountries = picked.some(([, o]) => !COUNTRY[o.destination] && cityCountries[o.destination] && cityCountries[o.destination] !== "GB");
+  const countries: Record<string, string> = needCountries ? await loadCountryNames() : {};
+  const countryOf = (code: string) => {
+    if (COUNTRY[code]) return COUNTRY[code];
+    const cc = cityCountries[code];
+    return cc && cc !== "GB" ? countries[cc] || "" : "";
+  };
 
   const results = picked.map(([tag, o]) => {
     const n = nights(o.departure_at, o.return_at);
@@ -547,7 +605,7 @@ export default async (req: Request, context: any) => {
     const url = "https://www.aviasales.com" + link + (link.includes("?") ? "&" : "?") + "marker=" + encodeURIComponent(marker);
     return {
       tag,
-      city,
+      city: countryOf(o.destination) ? `${city}, ${countryOf(o.destination)}` : city,
       route: `${originName} → ${city}`,
       dates: shortDates(o.departure_at, o.return_at),
       price: "£" + Math.round(o.price),
