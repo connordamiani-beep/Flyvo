@@ -25,6 +25,13 @@ const UK_HUBS: Array<[string, number, number]> = [
   ["NWI", 52.63, 1.3], ["INV", 57.48, -4.22],
 ];
 
+// Bigger airports within easy reach, checked as well for warm-weather searches
+const NEARBY: Record<string, string[]> = {
+  LBA: ["MAN"], NCL: ["MAN"], LPL: ["MAN"], DSA: ["MAN", "LBA"], EMA: ["BHX", "MAN"],
+  BHX: ["MAN"], BRS: ["LON"], CWL: ["BRS"], SOU: ["LON"], BOH: ["LON"], EXT: ["BRS"],
+  NWI: ["LON"], GLA: ["EDI"], EDI: ["GLA"], ABZ: ["EDI"], INV: ["EDI"],
+};
+
 function nearestHub(lat: number, lon: number) {
   let best = "LON", bestD = Infinity;
   for (const [code, la, lo] of UK_HUBS) {
@@ -359,36 +366,44 @@ export default async (req: Request, context: any) => {
 
   const p = (await askClaude(q, geoOrigin)) || { ...parseQuery(q, geoOrigin), destinations: [] as string[] };
 
-  const params = new URLSearchParams({
-    origin: p.origin,
-    departure_at: p.month,
-    return_at: p.month,
-    one_way: "false",
-    sorting: "price",
-    currency: "gbp",
-    limit: "100",
-    direct: p.direct ? "true" : "false",
-    unique: p.destination ? "false" : "true",
-    token,
-  });
-  if (p.destination) params.set("destination", p.destination);
-  if (market) params.set("market", market);
-
-  let payload: any;
-  try {
-    const res = await fetch("https://api.travelpayouts.com/aviasales/v3/prices_for_dates?" + params.toString(), {
-      headers: { "Accept-Encoding": "gzip, deflate" },
+  // Looks up return prices from one departure airport (null if the service didn't answer)
+  async function fetchOffers(origin: string): Promise<any[] | null> {
+    const params = new URLSearchParams({
+      origin,
+      departure_at: p.month,
+      return_at: p.month,
+      one_way: "false",
+      sorting: "price",
+      currency: "gbp",
+      limit: "100",
+      direct: p.direct ? "true" : "false",
+      unique: p.destination ? "false" : "true",
+      token: token!,
     });
-    payload = await res.json();
-    if (!res.ok || payload.success === false) {
-      return json({ error: "The flight data service didn't answer. Please try again in a moment." }, 502);
+    if (p.destination) params.set("destination", p.destination);
+    if (market) params.set("market", market);
+    try {
+      const res = await fetch("https://api.travelpayouts.com/aviasales/v3/prices_for_dates?" + params.toString(), {
+        headers: { "Accept-Encoding": "gzip, deflate" },
+      });
+      const payload = await res.json();
+      if (!res.ok || payload.success === false) return null;
+      return (Array.isArray(payload.data) ? payload.data : []).map((o: any) => ({ ...o, _from: origin }));
+    } catch {
+      return null;
     }
-  } catch {
+  }
+
+  // Warm searches also check bigger airports nearby (e.g. Manchester for Leeds), which have more winter-sun flights
+  const alts = p.warm && !p.destination ? (NEARBY[p.origin] || []).filter((c) => c !== p.origin) : [];
+  const [home, ...more] = await Promise.all([fetchOffers(p.origin), ...alts.map(fetchOffers)]);
+  if (home === null && more.every((m) => m === null)) {
     return json({ error: "The flight data service didn't answer. Please try again in a moment." }, 502);
   }
 
-  let offers: any[] = Array.isArray(payload.data) ? payload.data : [];
+  let offers: any[] = [...(home || []), ...more.flatMap((m) => m || [])];
   offers = offers.filter((o) => o && o.price && o.departure_at && o.return_at);
+  offers.sort((a, b) => a.price - b.price);
 
   const inLength = offers.filter((o) => {
     const n = nights(o.departure_at, o.return_at);
@@ -459,7 +474,11 @@ export default async (req: Request, context: any) => {
     const originName = nameOf(o.origin);
     const stops = o.transfers === 0 ? "Direct" : `${o.transfers} stop${o.transfers > 1 ? "s" : ""}`;
     const left = p.budget ? p.budget - Math.round(o.price) : null;
+    const fromNearby = o._from && o._from !== p.origin
+      ? `Flies from ${nameOf(o._from)}, the nearest big airport to ${nameOf(p.origin)}. `
+      : "";
     const take =
+      fromNearby +
       (left !== null && left >= 0 ? `£${left} of your £${p.budget} budget left for the rest of the trip. ` : "") +
       `${n} night${n === 1 ? "" : "s"} away, ${o.transfers === 0 ? "flying direct" : stops.toLowerCase() + " each way at most"}.` +
       (tag === "Cheapest" ? " This is the lowest price we found." : tag === "Shortest flight" ? " Gets you there fastest of the options." : "");
