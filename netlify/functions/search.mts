@@ -465,10 +465,13 @@ function kiwiUrl(o: any) {
   return "https://www.kiwi.com/deep?" + qs.toString();
 }
 
-async function kiwiPartnerLinks(offers: any[], token: string, marker: string, trs: number) {
+async function kiwiPartnerLinks(offers: any[], token: string, marker: string, trs: number, notes: string[] = []) {
   const out = new Map<string, string>();
   const urls = [...new Set(offers.map(kiwiUrl).filter(Boolean))];
-  if (!urls.length || !(trs > 0) || !(Number(marker) > 0)) return out;
+  if (!urls.length || !(trs > 0) || !(Number(marker) > 0)) {
+    notes.push("skipped: " + urls.length + " urls, trs " + (trs > 0 ? "set" : "missing"));
+    return out;
+  }
   const batches: string[][] = [];
   for (let i = 0; i < urls.length; i += 10) batches.push(urls.slice(i, i + 10));
   await Promise.all(
@@ -487,13 +490,19 @@ async function kiwiPartnerLinks(offers: any[], token: string, marker: string, tr
             links: batch.map((url) => ({ url, sub_id: "search" })),
           }),
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          notes.push("http " + res.status + ": " + (await res.text()).slice(0, 300));
+          return;
+        }
         const data: any = await res.json();
         for (const l of data?.result?.links || []) {
           if (l && l.code === "success" && /^https:\/\//.test(String(l.partner_url || ""))) out.set(String(l.url), String(l.partner_url));
+          else notes.push("link " + String(l?.code) + ": " + String(l?.message || "").slice(0, 200));
         }
-      } catch {
+        if (!data?.result?.links) notes.push("no links: " + JSON.stringify(data).slice(0, 300));
+      } catch (e) {
         // leave these results on their Aviasales links
+        notes.push("error: " + String((e as any)?.name || e));
       } finally {
         clearTimeout(timer);
       }
@@ -649,7 +658,8 @@ export default async (req: Request, context: any) => {
   };
 
   const trs = Number(Netlify.env.get("TRAVELPAYOUTS_TRS"));
-  const kiwi = await kiwiPartnerLinks(picked.map(([, o]) => o), token, marker, trs);
+  const linkNotes: string[] = [];
+  const kiwi = await kiwiPartnerLinks(picked.map(([, o]) => o), token, marker, trs, linkNotes);
 
   const results = picked.map(([tag, o]) => {
     const n = nights(o.departure_at, o.return_at);
@@ -688,6 +698,8 @@ export default async (req: Request, context: any) => {
     ai: aiStatus,
     query: p,
     results,
+    // ?debug=1 shows why deal links fell back to Aviasales (no secrets in here)
+    ...(new URL(req.url).searchParams.get("debug") === "1" ? { links: { kiwi: kiwi.size, notes: linkNotes } } : {}),
     ...(overBudget ? { message: `Nothing came in under £${p.budget}, so here are the closest options just above it.` } : {}),
   });
 };
