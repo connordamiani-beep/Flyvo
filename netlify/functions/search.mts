@@ -448,7 +448,7 @@ function foundLabel(at: number | null) {
   if (!at) return "Found in the last 48 hours";
   const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
   if (mins < 60) return "Found in the last hour";
-  const hours = Math.round(mins / 60);
+  const hours = Math.floor(mins / 60);
   if (hours < 24) return `Found ${hours} hour${hours === 1 ? "" : "s"} ago`;
   const days = Math.round(hours / 24);
   return `Found ${days} day${days === 1 ? "" : "s"} ago`;
