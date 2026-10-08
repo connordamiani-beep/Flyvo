@@ -443,7 +443,8 @@ input::placeholder{color:#5B6472;opacity:1}
         'About ' + esc(place) + '</button>' +
       '<div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: auto; padding-top: 20px; border-top: 1px solid #EEF2F7">' +
         '<div style="display: flex; flex-direction: column"><span style="font-size: 12px; color: #475569">Return from</span>' +
-        '<span style="font-size: 30px; font-weight: 700; letter-spacing: -0.03em; color: #0E1630">' + esc(r.price) + '</span></div>' +
+        '<span style="font-size: 30px; font-weight: 700; letter-spacing: -0.03em; color: #0E1630">' + esc(r.price) + '</span>' +
+        (r.found ? '<span style="font-size: 12px; color: #475569">' + esc(r.found) + '</span>' : '') + '</div>' +
         '<a href="' + esc(r.url) + '" target="_blank" rel="noopener sponsored" class="fv-btn" style="min-height: 48px; padding: 0 20px; border-radius: 14px; background: #0E1630; color: #ffffff; text-decoration: none; font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px">View deal ' +
         '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"></path></svg></a>' +
       '</div></article>';
@@ -475,7 +476,7 @@ input::placeholder{color:#5B6472;opacity:1}
         if (!x.ok) { label.textContent = 'Oops'; message(x.d.error || 'Something went wrong. Please try again.'); note.textContent = 'Prices in \u00A3 \u00B7 You book with the airline or our booking partner'; return; }
         if (!x.d.results || !x.d.results.length) { label.textContent = 'No matches'; message(x.d.message || 'No flights found. Try a different month or budget.'); note.textContent = 'Prices in \u00A3 \u00B7 You book with the airline or our booking partner'; return; }
         label.textContent = 'Your results';
-        sub.textContent = 'Live prices from recent searches. They can change, so check the final price with the airline.';
+        sub.textContent = 'Prices come from recent searches, and each one shows when it was found. Fares move quickly, so the final price is the one on the booking site.';
         lastResults = x.d.results;
         lastMonth = (x.d.query && MONTHS[x.d.query.monthIndex]) || '';
         grid.innerHTML = x.d.results.map(card).join('');
