@@ -465,49 +465,88 @@ function kiwiUrl(o: any) {
   return "https://www.kiwi.com/deep?" + qs.toString();
 }
 
-async function kiwiPartnerLinks(offers: any[], token: string, marker: string, trs: number, notes: string[] = []) {
+// Travelpayouts makes new links in the background: the first ask for a link often
+// answers "processing", and the same ask a moment later returns it. So we ask up to
+// three times, and remember finished links while this function stays warm.
+const kiwiCache = new Map<string, string>();
+
+async function kiwiPartnerLinks(
+  offers: any[],
+  token: string,
+  marker: string,
+  trs: number,
+  notes: string[] = [],
+  shorten = true,
+) {
   const out = new Map<string, string>();
   const urls = [...new Set(offers.map(kiwiUrl).filter(Boolean))];
   if (!urls.length || !(trs > 0) || !(Number(marker) > 0)) {
     notes.push("skipped: " + urls.length + " urls, trs " + (trs > 0 ? "set" : "missing"));
     return out;
   }
-  const batches: string[][] = [];
-  for (let i = 0; i < urls.length; i += 10) batches.push(urls.slice(i, i + 10));
-  await Promise.all(
-    batches.map(async (batch) => {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => ctl.abort(), 3000);
-      try {
-        const res = await fetch("https://api.travelpayouts.com/links/v1/create", {
-          method: "POST",
-          signal: ctl.signal,
-          headers: { "content-type": "application/json", "x-access-token": token },
-          body: JSON.stringify({
-            trs,
-            marker: Number(marker),
-            shorten: true,
-            links: batch.map((url) => ({ url, sub_id: "search" })),
-          }),
-        });
-        if (!res.ok) {
-          notes.push("http " + res.status + ": " + (await res.text()).slice(0, 300));
-          return;
+  const key = (u: string) => (shorten ? "s|" : "l|") + u;
+  let pending: string[] = [];
+  for (const u of urls) {
+    const hit = kiwiCache.get(key(u));
+    if (hit) out.set(u, hit);
+    else pending.push(u);
+  }
+  const started = Date.now();
+  for (let attempt = 1; attempt <= 3 && pending.length; attempt++) {
+    if (attempt > 1) {
+      if (Date.now() - started > 4500) break;
+      await new Promise((r) => setTimeout(r, 900));
+    }
+    const batches: string[][] = [];
+    for (let i = 0; i < pending.length; i += 10) batches.push(pending.slice(i, i + 10));
+    const again: string[] = [];
+    await Promise.all(
+      batches.map(async (batch) => {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 2500);
+        try {
+          const res = await fetch("https://api.travelpayouts.com/links/v1/create", {
+            method: "POST",
+            signal: ctl.signal,
+            headers: { "content-type": "application/json", "x-access-token": token },
+            body: JSON.stringify({
+              trs,
+              marker: Number(marker),
+              shorten,
+              links: batch.map((url) => ({ url, sub_id: "search" })),
+            }),
+          });
+          if (!res.ok) {
+            notes.push("try " + attempt + " http " + res.status + ": " + (await res.text()).slice(0, 300));
+            return;
+          }
+          const data: any = await res.json();
+          if (!data?.result?.links) notes.push("try " + attempt + " no links: " + JSON.stringify(data).slice(0, 300));
+          for (const l of data?.result?.links || []) {
+            const url = String(l?.url || "");
+            const partner = String(l?.partner_url || "");
+            if (l && l.code === "success" && /^https:\/\//.test(partner)) {
+              out.set(url, partner);
+              kiwiCache.set(key(url), partner);
+            } else if (l && l.code === "processing") {
+              again.push(url);
+            } else {
+              notes.push("try " + attempt + " link " + String(l?.code) + ": " + String(l?.message || "").slice(0, 200));
+            }
+          }
+        } catch (e) {
+          // leave these results on their Aviasales links
+          notes.push("try " + attempt + " error: " + String((e as any)?.name || e));
+        } finally {
+          clearTimeout(timer);
         }
-        const data: any = await res.json();
-        for (const l of data?.result?.links || []) {
-          if (l && l.code === "success" && /^https:\/\//.test(String(l.partner_url || ""))) out.set(String(l.url), String(l.partner_url));
-          else notes.push("link " + String(l?.code) + ": " + String(l?.message || "").slice(0, 200));
-        }
-        if (!data?.result?.links) notes.push("no links: " + JSON.stringify(data).slice(0, 300));
-      } catch (e) {
-        // leave these results on their Aviasales links
-        notes.push("error: " + String((e as any)?.name || e));
-      } finally {
-        clearTimeout(timer);
-      }
-    }),
-  );
+      }),
+    );
+    pending = again.filter((u) => urls.includes(u));
+    if (pending.length) notes.push("try " + attempt + ": " + pending.length + " still processing");
+  }
+  notes.push("took " + (Date.now() - started) + "ms, shorten " + shorten);
+  if (kiwiCache.size > 2000) kiwiCache.clear();
   return out;
 }
 
@@ -659,7 +698,9 @@ export default async (req: Request, context: any) => {
 
   const trs = Number(Netlify.env.get("TRAVELPAYOUTS_TRS"));
   const linkNotes: string[] = [];
-  const kiwi = await kiwiPartnerLinks(picked.map(([, o]) => o), token, marker, trs, linkNotes);
+  const debugOn = new URL(req.url).searchParams.get("debug") === "1";
+  const shortLinks = !(debugOn && new URL(req.url).searchParams.get("shorten") === "0");
+  const kiwi = await kiwiPartnerLinks(picked.map(([, o]) => o), token, marker, trs, linkNotes, shortLinks);
 
   const results = picked.map(([tag, o]) => {
     const n = nights(o.departure_at, o.return_at);
