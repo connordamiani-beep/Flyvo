@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Flyvo — find flights by budget</title>
-<meta name="description" content="Tell Flyvo your budget and dates in plain English. Your AI travel agent finds the cheapest flights, then sends you straight to the airline to book.">
+<meta name="description" content="Tell Flyvo your budget and dates in plain English. Your AI travel agent finds the cheapest flights, then sends you straight to the airline or booking partner to book.">
 <meta name="theme-color" content="#0E1630">
 <meta property="og:title" content="Flyvo — find flights by budget">
 <meta property="og:description" content="Tell us your budget. We'll find the sky.">
@@ -153,7 +153,7 @@ input::placeholder{color:#5B6472;opacity:1}
         <button type="button" class="fv-chip" data-q="Winter sun in January" style="min-height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid #DADCE0; background: #ffffff; font-family: inherit; font-size: 14px; color: #1F2937; cursor: pointer">Winter sun in January</button>
         <button type="button" class="fv-chip" data-q="Anywhere, next week" style="min-height: 44px; padding: 0 18px; border-radius: 999px; border: 1px solid #DADCE0; background: #ffffff; font-family: inherit; font-size: 14px; color: #1F2937; cursor: pointer">Anywhere, next week</button>
       </div>
-      <p id="fv-note" aria-live="polite" style="margin: 0; color: #334155; font-size: 13px">Prices in £ · You book directly with the airline</p>
+      <p id="fv-note" aria-live="polite" style="margin: 0; color: #334155; font-size: 13px">Prices in £ · You book with the airline or our booking partner</p>
     </div>
   </div>
 
@@ -301,7 +301,7 @@ input::placeholder{color:#5B6472;opacity:1}
     <div style="display: flex; flex-direction: column; gap: 14px">
       <span style="width: 40px; height: 40px; border-radius: 999px; background: #FFF1CC; color: #7A4F00; display: flex; align-items: center; justify-content: center; font-size: 15px; font-weight: 700">3</span>
       <h3 style="margin: 0; font-size: 20px; color: #0E1630">Book direct</h3>
-      <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #334155">Pick a flight and you're sent straight to the airline's site to book.</p>
+      <p style="margin: 0; font-size: 15px; line-height: 1.6; color: #334155">Pick a flight and you're sent straight to the airline or booking partner to book.</p>
     </div>
   </div>
 </section>
@@ -472,19 +472,19 @@ input::placeholder{color:#5B6472;opacity:1}
       .then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (x) {
         if (x.d && x.d.query) showFrom(x.d.query.origin);
-        if (!x.ok) { label.textContent = 'Oops'; message(x.d.error || 'Something went wrong. Please try again.'); note.textContent = 'Prices in \u00A3 \u00B7 You book directly with the airline'; return; }
-        if (!x.d.results || !x.d.results.length) { label.textContent = 'No matches'; message(x.d.message || 'No flights found. Try a different month or budget.'); note.textContent = 'Prices in \u00A3 \u00B7 You book directly with the airline'; return; }
+        if (!x.ok) { label.textContent = 'Oops'; message(x.d.error || 'Something went wrong. Please try again.'); note.textContent = 'Prices in \u00A3 \u00B7 You book with the airline or our booking partner'; return; }
+        if (!x.d.results || !x.d.results.length) { label.textContent = 'No matches'; message(x.d.message || 'No flights found. Try a different month or budget.'); note.textContent = 'Prices in \u00A3 \u00B7 You book with the airline or our booking partner'; return; }
         label.textContent = 'Your results';
         sub.textContent = 'Live prices from recent searches. They can change, so check the final price with the airline.';
         lastResults = x.d.results;
         lastMonth = (x.d.query && MONTHS[x.d.query.monthIndex]) || '';
         grid.innerHTML = x.d.results.map(card).join('');
-        note.textContent = 'Prices in \u00A3 \u00B7 You book directly with the airline';
+        note.textContent = 'Prices in \u00A3 \u00B7 You book with the airline or our booking partner';
       })
       .catch(function () {
         label.textContent = 'Oops';
         message('We couldn\u2019t reach the flight search. Please try again in a moment.');
-        note.textContent = 'Prices in \u00A3 \u00B7 You book directly with the airline';
+        note.textContent = 'Prices in \u00A3 \u00B7 You book with the airline or our booking partner';
       })
       .then(function () { busy = false; });
   }

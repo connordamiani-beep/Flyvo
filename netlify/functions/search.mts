@@ -1,6 +1,7 @@
 // Flyvo live flight search: turns plain English into a Travelpayouts (Aviasales) price lookup.
 // Needs one secret environment variable: TRAVELPAYOUTS_TOKEN
-// Optional: TRAVELPAYOUTS_MARKER (defaults to 779486), TRAVELPAYOUTS_MARKET
+// Optional: TRAVELPAYOUTS_MARKER (defaults to 779486), TRAVELPAYOUTS_MARKET,
+// TRAVELPAYOUTS_TRS (project ID; switches "View deal" links to Kiwi.com)
 
 // How many flights to send back in total (3 highlighted picks + the rest as "More options")
 const MAX_RESULTS = 15;
@@ -447,6 +448,60 @@ function json(body: unknown, status = 200) {
   });
 }
 
+// "View deal" links. Kiwi.com sells the ticket itself, so the visitor goes from Flyvo
+// straight to a page where they can book. Each link is made by the Travelpayouts
+// partner links API so the click is tracked. Needs TRAVELPAYOUTS_TRS (the Flyvo
+// project ID in Travelpayouts). Without it, or if the API fails, every result keeps
+// its Aviasales link, so a deal button always works.
+function kiwiUrl(o: any) {
+  const from = String(o.origin_airport || o.origin || "");
+  const to = String(o.destination_airport || o.destination || "");
+  const dep = String(o.departure_at || "").slice(0, 10);
+  const ret = String(o.return_at || "").slice(0, 10);
+  const day = /^\d{4}-\d{2}-\d{2}$/;
+  if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to) || !day.test(dep)) return "";
+  const qs = new URLSearchParams({ from, to, departure: dep });
+  if (day.test(ret)) qs.set("return", ret);
+  return "https://www.kiwi.com/deep?" + qs.toString();
+}
+
+async function kiwiPartnerLinks(offers: any[], token: string, marker: string, trs: number) {
+  const out = new Map<string, string>();
+  const urls = [...new Set(offers.map(kiwiUrl).filter(Boolean))];
+  if (!urls.length || !(trs > 0) || !(Number(marker) > 0)) return out;
+  const batches: string[][] = [];
+  for (let i = 0; i < urls.length; i += 10) batches.push(urls.slice(i, i + 10));
+  await Promise.all(
+    batches.map(async (batch) => {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 3000);
+      try {
+        const res = await fetch("https://api.travelpayouts.com/links/v1/create", {
+          method: "POST",
+          signal: ctl.signal,
+          headers: { "content-type": "application/json", "x-access-token": token },
+          body: JSON.stringify({
+            trs,
+            marker: Number(marker),
+            shorten: true,
+            links: batch.map((url) => ({ url, sub_id: "search" })),
+          }),
+        });
+        if (!res.ok) return;
+        const data: any = await res.json();
+        for (const l of data?.result?.links || []) {
+          if (l && l.code === "success" && /^https:\/\//.test(String(l.partner_url || ""))) out.set(String(l.url), String(l.partner_url));
+        }
+      } catch {
+        // leave these results on their Aviasales links
+      } finally {
+        clearTimeout(timer);
+      }
+    }),
+  );
+  return out;
+}
+
 export default async (req: Request, context: any) => {
   const token = Netlify.env.get("TRAVELPAYOUTS_TOKEN");
   const marker = Netlify.env.get("TRAVELPAYOUTS_MARKER") || "779486";
@@ -593,6 +648,9 @@ export default async (req: Request, context: any) => {
     return cc && cc !== "GB" ? countries[cc] || "" : "";
   };
 
+  const trs = Number(Netlify.env.get("TRAVELPAYOUTS_TRS"));
+  const kiwi = await kiwiPartnerLinks(picked.map(([, o]) => o), token, marker, trs);
+
   const results = picked.map(([tag, o]) => {
     const n = nights(o.departure_at, o.return_at);
     const city = nameOf(o.destination);
@@ -611,7 +669,9 @@ export default async (req: Request, context: any) => {
       `${n} night${n === 1 ? "" : "s"} away, ${o.transfers === 0 ? "flying direct" : stops.toLowerCase() + " each way at most"}.` +
       (tag === "Cheapest" ? " This is the lowest price we found." : tag === "Shortest flight" ? " Gets you there fastest of the options." : "");
     const link = String(o.link || "");
-    const url = "https://www.aviasales.com" + link + (link.includes("?") ? "&" : "?") + "marker=" + encodeURIComponent(marker);
+    const url =
+      kiwi.get(kiwiUrl(o)) ||
+      "https://www.aviasales.com" + link + (link.includes("?") ? "&" : "?") + "marker=" + encodeURIComponent(marker);
     return {
       tag,
       city: countryOf(o.destination) ? `${city}, ${countryOf(o.destination)}` : city,
