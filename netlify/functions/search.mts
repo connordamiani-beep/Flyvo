@@ -441,6 +441,19 @@ function hm(mins: number) {
   return `${Math.floor(mins / 60)}h ${String(mins % 60).padStart(2, "0")}m`;
 }
 
+// How long ago a price was found, shown under the price on each card.
+// Prices come from other travellers' recent searches, so they can be hours old.
+const FRESH_HOURS = 24;
+function foundLabel(at: number | null) {
+  if (!at) return "Found in the last 48 hours";
+  const mins = Math.max(0, Math.round((Date.now() - at) / 60000));
+  if (mins < 60) return "Found in the last hour";
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `Found ${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(hours / 24);
+  return `Found ${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -605,15 +618,89 @@ export default async (req: Request, context: any) => {
     }
   }
 
+  // When each price was found. The price list above doesn't say, so we ask the
+  // "latest prices" list for the same month and match on destination, dates and price.
+  // If it doesn't answer, results still show, just without an exact age.
+  const found = new Map<string, Array<{ at: number; price: number }>>();
+  const freshNotes: string[] = [];
+  async function fetchFound(origin: string) {
+    const params = new URLSearchParams({
+      origin,
+      beginning_of_period: p.month + "-01",
+      period_type: "month",
+      one_way: "false",
+      sorting: "price",
+      currency: "gbp",
+      limit: "1000",
+      page: "1",
+      token: token!,
+    });
+    if (p.destination) params.set("destination", p.destination);
+    if (market) params.set("market", market);
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 3500);
+    try {
+      const res = await fetch("https://api.travelpayouts.com/aviasales/v3/get_latest_prices?" + params.toString(), {
+        signal: ctl.signal,
+        headers: { "Accept-Encoding": "gzip, deflate" },
+      });
+      const payload = await res.json();
+      if (!res.ok || payload.success === false) {
+        freshNotes.push(origin + " http " + res.status + ": " + JSON.stringify(payload).slice(0, 200));
+        return;
+      }
+      const rows: any[] = Array.isArray(payload.data) ? payload.data : [];
+      for (const r of rows) {
+        const at = Date.parse(String(r?.found_at || ""));
+        const price = Number(r?.value);
+        if (!r || !r.destination || !r.depart_date || !r.return_date || !Number.isFinite(at) || !(price > 0)) continue;
+        const key = `${origin}|${r.destination}|${String(r.depart_date).slice(0, 10)}|${String(r.return_date).slice(0, 10)}`;
+        const list = found.get(key);
+        if (list) list.push({ at, price });
+        else found.set(key, [{ at, price }]);
+      }
+      freshNotes.push(origin + " " + rows.length + " rows");
+    } catch (e) {
+      freshNotes.push(origin + " error: " + String((e as any)?.name || e));
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  function foundAt(o: any): number | null {
+    const dep = String(o.departure_at).slice(0, 10);
+    const ret = String(o.return_at).slice(0, 10);
+    let best: number | null = null;
+    for (const dest of new Set([o.destination, o.destination_airport])) {
+      for (const row of found.get(`${o._from}|${dest}|${dep}|${ret}`) || []) {
+        if (Math.abs(row.price - o.price) > Math.max(2, o.price * 0.02)) continue;
+        if (best === null || row.at > best) best = row.at;
+      }
+    }
+    return best;
+  }
+
   // Warm searches also check bigger airports nearby (e.g. Manchester for Leeds), which have more winter-sun flights
   const alts = p.warm && !p.destination ? (NEARBY[p.origin] || []).filter((c) => c !== p.origin) : [];
-  const [home, ...more] = await Promise.all([fetchOffers(p.origin), ...alts.map(fetchOffers)]);
+  const origins = [p.origin, ...alts];
+  const [[home, ...more]] = await Promise.all([
+    Promise.all(origins.map(fetchOffers)),
+    Promise.all(origins.map(fetchFound)),
+  ]);
   if (home === null && more.every((m) => m === null)) {
     return json({ error: "The flight data service didn't answer. Please try again in a moment." }, 502);
   }
 
   let offers: any[] = [...(home || []), ...more.flatMap((m) => m || [])];
   offers = offers.filter((o) => o && o.price && o.departure_at && o.return_at);
+  for (const o of offers) o._found = foundAt(o);
+  // Leave out prices we know are more than a day old: those are the ones most likely
+  // to have gone up by the time the visitor clicks through. If that would leave
+  // nothing at all, keep them and let the card say how old each one is.
+  const cutoff = Date.now() - FRESH_HOURS * 3600000;
+  const total = offers.length;
+  const fresh = offers.filter((o) => o._found === null || o._found >= cutoff);
+  if (fresh.length) offers = fresh;
+  freshNotes.push(`${total} offers, ${offers.filter((o) => o._found !== null).length} with a found time, ${total - fresh.length} over ${FRESH_HOURS}h old`);
   offers.sort((a, b) => a.price - b.price);
 
   const inLength = offers.filter((o) => {
@@ -729,6 +816,8 @@ export default async (req: Request, context: any) => {
       route: `${originName} → ${city}`,
       dates: shortDates(o.departure_at, o.return_at),
       price: "£" + Math.round(o.price),
+      found: foundLabel(o._found),
+      found_at: o._found ? new Date(o._found).toISOString() : null,
       stops: `${stops}${o.duration_to ? " · " + hm(o.duration_to) : ""}`,
       take,
       url,
@@ -740,7 +829,7 @@ export default async (req: Request, context: any) => {
     query: p,
     results,
     // ?debug=1 shows why deal links fell back to Aviasales (no secrets in here)
-    ...(new URL(req.url).searchParams.get("debug") === "1" ? { links: { kiwi: kiwi.size, notes: linkNotes } } : {}),
+    ...(new URL(req.url).searchParams.get("debug") === "1" ? { links: { kiwi: kiwi.size, notes: linkNotes }, freshness: freshNotes } : {}),
     ...(overBudget ? { message: `Nothing came in under £${p.budget}, so here are the closest options just above it.` } : {}),
   });
 };
