@@ -1,0 +1,26 @@
+{
+  "note": "Higgsfield job ledger. Sandbox: /home/user/gta6 (assets/, bin/prep.py, bin/render.py, bin/align.py, out/).",
+  "influencer_sheet": "2ab3bbb7-2ced-42b9-8be6-f694d01cfd88",
+  "portrait": "5075d860-adb3-4b38-ae77-d08424318620",
+  "voice_preset_dylan": "b847bc29-f184-583a-8ad9-d1f1e16d1a60",
+  "rendered": ["GTA6_01", "GTA6_02", "GTA6_05", "GTA6_06"],
+  "rendering_bg": ["GTA6_03", "GTA6_04"],
+  "pending_hooks": {
+    "7": "39235ff0-62f2-4a15-8448-e2dc5a0660ad",
+    "8": "2c50e798-db28-4dbd-b7a6-cad33f701356",
+    "9": "8bdaeefa-b620-42d2-ac7a-6fee8c164299",
+    "10": "b73c1ea5-e41b-4cb6-9808-7a7e758a2ec6"
+  },
+  "pending_images": {
+    "701": "dda5a0d9-c97c-4310-bf32-bea2aa84ec86",
+    "703": "e1f7b6fe-cd40-41af-b1b6-597ad8e690bb",
+    "801": "bf0b68d5-0807-4561-809d-5de60a806c2c"
+  },
+  "images_todo": ["802", "803", "901", "902", "903", "1001", "1002", "1003"],
+  "render_plan": {
+    "7": ["WILL GTA 6 DISAPPOINT?", "i701", "i703", "i702"],
+    "8": ["MAKE MONEY CLIPPING GTA 6", "i801", "i802", "i803"],
+    "9": ["WILL GTA 6 BREAK THE INTERNET?", "i901", "i902", "i903"],
+    "10": ["YOUR GTA 6 FIRST-HOUR PLAN", "i1001", "i1002", "i1003"]
+  }
+}
