@@ -109,8 +109,7 @@ def draw_slide(img, slide, lt, dur, idx):
 
 def chrome(img, t):
     d = ImageDraw.Draw(img, "RGBA")
-    d.text((80, 180), "VICE", font=f(54), fill=WHITE + (235,))
-    d.text((80 + d.textlength("VICE ", font=f(54)), 192), "GTA 6 LAUNCH WEEK", font=f(40, True), fill=TEAL + (235,))
+    d.text((80, 192), "GTA 6 LAUNCH WEEK", font=f(40, True), fill=TEAL + (235,))
     # progress bar
     d.rectangle([80, 270, W - 80, 278], fill=(255, 255, 255, 50))
     d.rectangle([80, 270, 80 + int((W - 160) * t / TOTAL), 278], fill=PINK + (255,))
